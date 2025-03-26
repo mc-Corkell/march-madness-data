@@ -50,7 +50,10 @@ app.get('/events', (req, res) => {
 
 // Function to send SSE to all connected clients
 async function sendSSEMessage(data) {
-
+    // Add a 1-second delay before sending the message
+    // to have my UI be able to visualize the flow of data in a human detectable speed
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
     clients.forEach(client => {
         try {
             client.res.write(`data: ${JSON.stringify(data)}\n\n`);
