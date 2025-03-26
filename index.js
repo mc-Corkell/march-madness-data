@@ -13,7 +13,7 @@ function readConfig(fileName) {
     }, {});
 }
 
-async function produce(topic, config, freeThrowData) {
+async function produce(topic, config, freeThrowData, gameId) {
     // create a new producer instance
     const producer = new Kafka().producer(config);
 
@@ -22,10 +22,11 @@ async function produce(topic, config, freeThrowData) {
 
     // Process each free throw entry
     for (const freeThrow of freeThrowData) {
-        const key = freeThrow.time;  // Extract time from each free throw entry
+        const key = gameId;
         const value = JSON.stringify({
+            time: freeThrow.time,
             homeText: freeThrow.homeText,
-            visitorText: freeThrow.visitorText
+            visitorText: freeThrow.visitorText,
         });
 
         // send a message for each free throw
@@ -33,13 +34,13 @@ async function produce(topic, config, freeThrowData) {
             topic,
             messages: [{ key, value }],
         });
-        console.log(
-            `\n\n Produced message to topic ${topic}: key = ${key}, value = ${value}, ${JSON.stringify(
-                produceRecord,
-                null,
-                2
-            )} \n\n`
-        );
+        // console.log(
+        //     `\n\n Produced message to topic ${topic}: key = ${key}, value = ${value}, ${JSON.stringify(
+        //         produceRecord,
+        //         null,
+        //         2
+        //     )} \n\n`
+        // );
     }
 
     // disconnect the producer
@@ -70,7 +71,7 @@ async function consume(topic, config) {
 
     // subscribe to the topic
     await consumer.subscribe({ topics: [topic] });
-
+    
     // consume messages from the topic
     consumer.run({
         eachMessage: async ({ topic, partition, message }) => {
@@ -89,17 +90,23 @@ async function consume(topic, config) {
                 ? ((madeFreeThrows / totalFreeThrows) * 100).toFixed(2) 
                 : 0;
 
-            console.log(
-                `Time: ${message.key.toString()}\n` +
+            const debugMsg = `GameId: ${message.key.toString()}\n` +
+                `Time: ${value.time}\n` +
                 `Play: ${value.homeText}\n` +
                 `Current Stats:\n` +
                 `- Made: ${madeFreeThrows}\n` +
                 `- Missed: ${missedFreeThrows}\n` +
+                `- Total: ${totalFreeThrows}\n` +
                 `- Made Percentage: ${madePercentage}%\n` +
-                `------------------------`
-            );
+                `------------------------`;
+            
+            console.log(debugMsg);
         },
-    });
+    })
+}
+
+function isFreeThrow(play) { 
+    return play.homeText.includes("Free Throw MISSED") || play.visitorText.includes("Free Throw MISSED") || play.homeText.includes("Free Throw  ") || play.visitorText.includes("Free Throw  ");
 }
 
 // Function to filter homeText and visitorText for "Free Throw"
@@ -108,34 +115,13 @@ function extractFreeThrows(data) {
   
     data.periods.forEach(period => {
       period.playStats.forEach(play => {
-        if (play.homeText.includes("Free Throw MISSED") || play.visitorText.includes("Free Throw")) {
+        if (isFreeThrow(play)) {
           freeThrows.push({ time: play.time, homeText: play.homeText, visitorText: play.visitorText });
         }
       });
     });
   
     return freeThrows;
-  }
-
-  // Function to count the occurrences of "Free Throw MISSED" and "Free Throw"
-function countFreeThrows(freeThrowPlays) {
-    let missedCount = 0;
-    let totalCount = 0;
-  
-    // Iterate over the array to count the occurrences
-    freeThrowPlays.forEach(play => {
-      if (play.homeText.includes("Free Throw MISSED")) {
-        missedCount++;
-      }
-      if (play.visitorText.includes("Free Throw")) {
-        totalCount++;
-      }
-    });
-  
-    return {
-      "Free Throw MISSED": missedCount,
-      "Free Throw Total": totalCount
-    };
   }
 
 async function fetchPlayByPlayData(gameId) {
@@ -152,8 +138,9 @@ async function fetchPlayByPlayData(gameId) {
         // Truncate to 10 items for debugging
         // const truncatedFreeThrows = freeThrowPlays.slice(0, 10);
         // console.log('Truncated to 10 free throws:', truncatedFreeThrows);
-        
-        return truncatedFreeThrows;
+        // return truncatedFreeThrows;
+        console.log(" Free throws for game id: " + gameId + " is " + freeThrowPlays.length);
+        return freeThrowPlays;
     } catch (error) {
         console.error('Error fetching play-by-play data:', error.message);
         if (error.response) {
@@ -165,14 +152,15 @@ async function fetchPlayByPlayData(gameId) {
 
 async function main() {
     const config = readConfig("client.properties");
-    const topic = "march_madness_data_2025";
+    const topic = "march_madness_data_2025_v2";
     
     try {
-        const gameId = "6384794";
-        const freeThrowData = await fetchPlayByPlayData(gameId);
-        console.log('Free throw data:', freeThrowData);
         
-        await produce(topic, config, freeThrowData);
+        const gameIds = ["6384749"];//, "6384750", "6384751", "6384752"];
+        for (const gameId of gameIds) {
+            const freeThrowData = await fetchPlayByPlayData(gameId);
+            await produce(topic, config, freeThrowData, gameId);
+        }
         await consume(topic, config);
     } catch (error) {
         console.error('Failed to process game data:', error);
