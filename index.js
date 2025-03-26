@@ -1,6 +1,42 @@
 const fs = require("fs");
 const { Kafka } = require("@confluentinc/kafka-javascript").KafkaJS;
 const axios = require("axios");
+const express = require('express');
+const cors = require("cors");
+
+// Initialize Express app
+const app = express();
+app.use(cors());
+
+// Store connected SSE clients
+let clients = [];
+
+// SSE endpoint
+app.get('/events', (req, res) => {
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+    });
+
+    const clientId = Date.now();
+    const newClient = {
+        id: clientId,
+        res
+    };
+    clients.push(newClient);
+
+    req.on('close', () => {
+        clients = clients.filter(client => client.id !== clientId);
+    });
+});
+
+// Function to send SSE to all connected clients
+function sendSSEMessage(data) {
+    clients.forEach(client => {
+        client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+    });
+}
 
 function readConfig(fileName) {
     const data = fs.readFileSync(fileName, "utf8").toString().split("\n");
@@ -62,7 +98,7 @@ async function consume(topic, config) {
     let missedFreeThrows = 0;
 
     // set the consumer's group ID, offset and initialize it
-    config["group.id"] = "nodejs-group-1";
+    config["group.id"] = "nodejs-group-1"; 
     config["auto.offset.reset"] = "earliest";
     const consumer = new Kafka().consumer(config);
 
@@ -71,7 +107,7 @@ async function consume(topic, config) {
 
     // subscribe to the topic
     await consumer.subscribe({ topics: [topic] });
-    
+
     // consume messages from the topic
     consumer.run({
         eachMessage: async ({ topic, partition, message }) => {
@@ -90,6 +126,21 @@ async function consume(topic, config) {
                 ? ((madeFreeThrows / totalFreeThrows) * 100).toFixed(2) 
                 : 0;
 
+            const messageData = {
+                time: message.key.toString(),
+                play: value.homeText,
+                stats: {
+                    made: madeFreeThrows,
+                    missed: missedFreeThrows,
+                    total: totalFreeThrows,
+                    percentage: madePercentage
+                }
+            };
+
+            // Send to SSE clients
+            sendSSEMessage(messageData);
+
+            // Optional: keep console logging for debugging
             const debugMsg = `GameId: ${message.key.toString()}\n` +
                 `Time: ${value.time}\n` +
                 `Play: ${value.homeText}\n` +
@@ -99,7 +150,6 @@ async function consume(topic, config) {
                 `- Total: ${totalFreeThrows}\n` +
                 `- Made Percentage: ${madePercentage}%\n` +
                 `------------------------`;
-            
             console.log(debugMsg);
         },
     })
@@ -155,12 +205,19 @@ async function main() {
     const topic = "march_madness_data_2025_v2";
     
     try {
-        
         const gameIds = ["6384749"];//, "6384750", "6384751", "6384752"];
         for (const gameId of gameIds) {
             const freeThrowData = await fetchPlayByPlayData(gameId);
             await produce(topic, config, freeThrowData, gameId);
         }
+        
+        // Start the Express server
+        const PORT = process.env.PORT || 3000;
+        app.listen(PORT, () => {
+            console.log(`SSE Server running on port ${PORT}`);
+        });
+
+        await produce(topic, config, freeThrowData, gameId);
         await consume(topic, config);
     } catch (error) {
         console.error('Failed to process game data:', error);
