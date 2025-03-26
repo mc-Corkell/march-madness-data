@@ -6,18 +6,27 @@ const cors = require("cors");
 
 // Initialize Express app
 const app = express();
-app.use(cors());
+app.use(cors({
+    origin: '*', // Allow all origins for development
+    methods: ['GET'],
+    allowedHeaders: ['Content-Type']
+}));
 
 // Store connected SSE clients
 let clients = [];
 
 // SSE endpoint
 app.get('/events', (req, res) => {
+    // Set headers for SSE
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
     });
+
+    // Send an initial connection message
+    res.write('data: {"type": "connected"}\n\n');
 
     const clientId = Date.now();
     const newClient = {
@@ -26,15 +35,30 @@ app.get('/events', (req, res) => {
     };
     clients.push(newClient);
 
+    // Handle client disconnect
     req.on('close', () => {
+        console.log(`Client ${clientId} disconnected`);
+        clients = clients.filter(client => client.id !== clientId);
+    });
+
+    // Handle errors
+    req.on('error', (error) => {
+        console.error(`Error with client ${clientId}:`, error);
         clients = clients.filter(client => client.id !== clientId);
     });
 });
 
 // Function to send SSE to all connected clients
-function sendSSEMessage(data) {
+async function sendSSEMessage(data) {
+
     clients.forEach(client => {
-        client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+        try {
+            client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch (error) {
+            console.error(`Error sending message to client ${client.id}:`, error);
+            // Remove the client if there's an error
+            clients = clients.filter(c => c.id !== client.id);
+        }
     });
 }
 
@@ -138,7 +162,7 @@ async function consume(topic, config) {
             };
 
             // Send to SSE clients
-            sendSSEMessage(messageData);
+            await sendSSEMessage(messageData);
 
             // Optional: keep console logging for debugging
             const debugMsg = `GameId: ${message.key.toString()}\n` +
@@ -213,19 +237,19 @@ async function main() {
     const topic = "march_madness_data_2025_v2";
     
     try {
-        const gameIds = ["6384749"];//, "6384750", "6384751", "6384752"];
-        for (const gameId of gameIds) {
-            const freeThrowData = await fetchPlayByPlayData(gameId);
-            await produce(topic, config, freeThrowData, gameId);
-        }
-        
+                
         // Start the Express server
         const PORT = process.env.PORT || 3000;
         app.listen(PORT, () => {
             console.log(`SSE Server running on port ${PORT}`);
         });
 
-        await produce(topic, config, freeThrowData, gameId);
+        const gameIds = ["6384749"];//, "6384750", "6384751", "6384752"];
+        for (const gameId of gameIds) {
+            const freeThrowData = await fetchPlayByPlayData(gameId);
+            await produce(topic, config, freeThrowData, gameId);
+        }
+
         await consume(topic, config);
     } catch (error) {
         console.error('Failed to process game data:', error);
