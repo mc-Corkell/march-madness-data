@@ -114,9 +114,9 @@ async function consume(topic, config) {
             const value = JSON.parse(message.value.toString());
             
             // Check if it's a missed free throw
-            if (value.homeText.includes("Free Throw MISSED") || value.visitorText.includes("Free Throw MISSED")) {
+            if (isFreeThrowMiss(value)) {
                 missedFreeThrows++;
-            } else if (value.homeText.includes("Free Throw  ") || value.visitorText.includes("Free Throw  ")) {
+            } else if (isFreeThrowMade(value)) {
                 madeFreeThrows++;
             }
             
@@ -156,7 +156,15 @@ async function consume(topic, config) {
 }
 
 function isFreeThrow(play) { 
-    return play.homeText.includes("Free Throw MISSED") || play.visitorText.includes("Free Throw MISSED") || play.homeText.includes("Free Throw  ") || play.visitorText.includes("Free Throw  ");
+    return isFreeThrowMiss(play) || isFreeThrowMade(play);
+}
+
+function isFreeThrowMiss(play) { 
+    return play.homeText.includes("Free Throw MISSED") || play.visitorText.includes("Free Throw MISSED");
+}
+
+function isFreeThrowMade(play) { 
+    return play.homeText.includes("Free Throw  ") || play.visitorText.includes("Free Throw  ");
 }
 
 // Function to filter homeText and visitorText for "Free Throw"
