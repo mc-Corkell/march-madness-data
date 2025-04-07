@@ -75,7 +75,7 @@ function readConfig(fileName) {
     }, {});
 }
 
-async function produce(topic, config, freeThrowData, gameId) {
+async function produce(topic, config, freeThrowData, gameId, gender) {
     // create a new producer instance
     const producer = new Kafka().producer(config);
 
@@ -89,6 +89,7 @@ async function produce(topic, config, freeThrowData, gameId) {
             time: freeThrow.time,
             homeText: freeThrow.homeText,
             visitorText: freeThrow.visitorText,
+            gender: gender
         });
 
         // send a message for each free throw
@@ -96,13 +97,6 @@ async function produce(topic, config, freeThrowData, gameId) {
             topic,
             messages: [{ key, value }],
         });
-        // console.log(
-        //     `\n\n Produced message to topic ${topic}: key = ${key}, value = ${value}, ${JSON.stringify(
-        //         produceRecord,
-        //         null,
-        //         2
-        //     )} \n\n`
-        // );
     }
 
     // disconnect the producer
@@ -124,9 +118,21 @@ async function consume(topic, config) {
     process.on("SIGTERM", disconnect);
     process.on("SIGINT", disconnect);
 
-    // Initialize counters
-    let madeFreeThrows = 0;
-    let missedFreeThrows = 0;
+    // Initialize counters for men and women separately
+    let stats = {
+        men: {
+            made: 0,
+            missed: 0,
+            total: 0,
+            percentage: 0
+        },
+        women: {
+            made: 0,
+            missed: 0,
+            total: 0,
+            percentage: 0
+        }
+    };
 
     // set the consumer's group ID, offset and initialize it
     config["group.id"] = "nodejs-group-1"; 
@@ -148,31 +154,33 @@ async function consume(topic, config) {
         console.log("Starting to consume messages...");
         consumer.run({
             eachMessage: async ({ topic, partition, message }) => {
-                console.log(`Received message from topic ${topic}, partition ${partition}`);
+                //console.log(`Received message from topic ${topic}, partition ${partition}`);
                 const value = JSON.parse(message.value.toString());
+                const gender = value.gender || "unknown";
                 
-                // Check if it's a missed free throw
+                // Update the appropriate gender's stats
                 if (isFreeThrowMiss(value)) {
-                    missedFreeThrows++;
+                    stats[gender].missed++;
                 } else if (isFreeThrowMade(value)) {
-                    madeFreeThrows++;
+                    stats[gender].made++;
                 }
                 
-                // Calculate percentage
-                const totalFreeThrows = madeFreeThrows + missedFreeThrows;
-                const madePercentage = totalFreeThrows > 0 
-                    ? ((madeFreeThrows / totalFreeThrows) * 100).toFixed(2) 
+                // Calculate percentages for both genders
+                stats.men.total = stats.men.made + stats.men.missed;
+                stats.women.total = stats.women.made + stats.women.missed;
+                
+                stats.men.percentage = stats.men.total > 0 
+                    ? ((stats.men.made / stats.men.total) * 100).toFixed(2) 
+                    : 0;
+                
+                stats.women.percentage = stats.women.total > 0 
+                    ? ((stats.women.made / stats.women.total) * 100).toFixed(2) 
                     : 0;
 
                 const messageData = {
                     time: message.key.toString(),
                     play: value.homeText,
-                    stats: {
-                        made: madeFreeThrows,
-                        missed: missedFreeThrows,
-                        total: totalFreeThrows,
-                        percentage: madePercentage
-                    }
+                    stats: stats
                 };
 
                 // Send to SSE clients
@@ -182,13 +190,20 @@ async function consume(topic, config) {
                 const debugMsg = `GameId: ${message.key.toString()}\n` +
                     `Time: ${value.time}\n` +
                     `Play: ${value.homeText}\n` +
+                    `Gender: ${gender}\n` +
                     `Current Stats:\n` +
-                    `- Made: ${madeFreeThrows}\n` +
-                    `- Missed: ${missedFreeThrows}\n` +
-                    `- Total: ${totalFreeThrows}\n` +
-                    `- Made Percentage: ${madePercentage}%\n` +
+                    `Men:\n` +
+                    `- Made: ${stats.men.made}\n` +
+                    `- Missed: ${stats.men.missed}\n` +
+                    `- Total: ${stats.men.total}\n` +
+                    `- Made Percentage: ${stats.men.percentage}%\n` +
+                    `Women:\n` +
+                    `- Made: ${stats.women.made}\n` +
+                    `- Missed: ${stats.women.missed}\n` +
+                    `- Total: ${stats.women.total}\n` +
+                    `- Made Percentage: ${stats.women.percentage}%\n` +
                     `------------------------`;
-                console.log(debugMsg);
+                //console.log(debugMsg);
             },
         });
     } catch (error) {
@@ -206,7 +221,8 @@ function isFreeThrowMiss(play) {
 }
 
 function isFreeThrowMade(play) { 
-    return play.homeText.includes("Free Throw  ") || play.visitorText.includes("Free Throw  ");
+    return (play.homeText && play.homeText.trim() !== '' && play.homeText.includes("Free Throw  ")) || 
+           (play.visitorText && play.visitorText.trim() !== '' && play.visitorText.includes("Free Throw  "));
 }
 
 // Function to filter homeText and visitorText for "Free Throw"
@@ -262,8 +278,11 @@ async function processTournamentGames(schedule, tournamentType) {
         gameIds = gameIds.concat(roundGameIds);
         //console.log(`Found ${roundGameIds.length} ${tournamentType} ${bracketRound} games for ${date}`);
     }
-
-    return gameIds;
+    
+    // Create a map of game IDs to gender
+    const gameIdToGender = new Map(gameIds.map(gameId => [gameId, tournamentType.includes("women") ? "women" : "men"]));
+    
+    return gameIdToGender;
 }
 
 async function fetchTournamentGameIds() {
@@ -279,7 +298,7 @@ async function fetchTournamentGameIds() {
         ["2025/03/30", "Elite Eight"],
         ["2025/03/31", "Elite Eight"],
         ["2025/04/04", "FINAL FOUR"],
-        ["2025/04/06", "Championship"]
+        ["2025/04/06", "Championship"],
     ]);
 
     const menTournamentSchedule = new Map([
@@ -297,15 +316,42 @@ async function fetchTournamentGameIds() {
         ["2025/04/07", "Championship"]
     ]);
 
-    const womenGameIds = await processTournamentGames(womenTournamentSchedule, "women");
-    const menGameIds = await processTournamentGames(menTournamentSchedule, "men");
+    const womenGames = await processTournamentGames(womenTournamentSchedule, "women");
+    const menGames = await processTournamentGames(menTournamentSchedule, "men");
     
-    return womenGameIds.concat(menGameIds);
+    // Combine both maps
+    const allGames = new Map([...womenGames, ...menGames]);
+    
+    return { allGames };
+}
+
+async function processGame(gameId, gender) {
+    try {
+        const freeThrowData = await fetchPlayByPlayData(gameId);
+        if (!freeThrowData || !freeThrowData.plays) {
+            console.log(`No play data found for game ${gameId}`);
+            return;
+        }
+
+        // Filter out plays with empty strings and process only valid plays
+        const validPlays = freeThrowData.plays.filter(play => 
+            play && 
+            play.homeText && 
+            play.homeText.trim() !== '' && 
+            (isFreeThrowMade(play) || isFreeThrowMiss(play))
+        );
+
+        for (const play of validPlays) {
+            await produce(topic, config, play, gameId, gender);
+        }
+    } catch (error) {
+        console.error(`Error processing game ${gameId}:`, error);
+    }
 }
 
 async function main() {
     const config = readConfig("client.properties");
-    const topic = "march_madness_data_2025_v2";
+    const topic = "march_madness_data_2025_v3";
     
     try {
         // Start the Express server
@@ -314,16 +360,14 @@ async function main() {
             console.log(`SSE Server running on port ${PORT}`);
         });
 
-        const tournamentGameIds = await fetchTournamentGameIds();
-        console.log(`Found ${tournamentGameIds.length} total games across both tournaments`);
+        const { allGames } = await fetchTournamentGameIds();
         
         // Start the consumer before processing games
         console.log("Starting Kafka consumer...");
         await consume(topic, config);
-        
-        for (const gameId of tournamentGameIds) {
-            const freeThrowData = await fetchPlayByPlayData(gameId);
-            await produce(topic, config, freeThrowData, gameId);
+        console.log(allGames);
+        for (const [gameId, gender] of allGames) {
+            await processGame(gameId, gender);
         }
     } catch (error) {
         console.error('Failed to process game data:', error);
