@@ -52,8 +52,7 @@ app.get('/events', (req, res) => {
 async function sendSSEMessage(data) {
     // Add a 1-second delay before sending the message
     // to have my UI be able to visualize the flow of data in a human detectable speed
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
+    // await new Promise(resolve => setTimeout(resolve, 1000));
     clients.forEach(client => {
         try {
             client.res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -111,10 +110,15 @@ async function produce(topic, config, freeThrowData, gameId) {
 }
 
 async function consume(topic, config) {
+    console.log("Starting Kafka consumer...");
+    console.log("Consumer config:", config);
+    
     // setup graceful shutdown
     const disconnect = () => {
+        console.log("Disconnecting consumer...");
         consumer.commitOffsets().finally(() => {
             consumer.disconnect();
+            console.log("Consumer disconnected");
         });
     };
     process.on("SIGTERM", disconnect);
@@ -129,57 +133,68 @@ async function consume(topic, config) {
     config["auto.offset.reset"] = "earliest";
     const consumer = new Kafka().consumer(config);
 
-    // connect the consumer to the broker
-    await consumer.connect();
+    try {
+        // connect the consumer to the broker
+        console.log("Connecting consumer to broker...");
+        await consumer.connect();
+        console.log("Consumer connected successfully");
 
-    // subscribe to the topic
-    await consumer.subscribe({ topics: [topic] });
+        // subscribe to the topic
+        console.log(`Subscribing to topic: ${topic}`);
+        await consumer.subscribe({ topics: [topic] });
+        console.log("Successfully subscribed to topic");
 
-    // consume messages from the topic
-    consumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
-            const value = JSON.parse(message.value.toString());
-            
-            // Check if it's a missed free throw
-            if (isFreeThrowMiss(value)) {
-                missedFreeThrows++;
-            } else if (isFreeThrowMade(value)) {
-                madeFreeThrows++;
-            }
-            
-            // Calculate percentage
-            const totalFreeThrows = madeFreeThrows + missedFreeThrows;
-            const madePercentage = totalFreeThrows > 0 
-                ? ((madeFreeThrows / totalFreeThrows) * 100).toFixed(2) 
-                : 0;
-
-            const messageData = {
-                time: message.key.toString(),
-                play: value.homeText,
-                stats: {
-                    made: madeFreeThrows,
-                    missed: missedFreeThrows,
-                    total: totalFreeThrows,
-                    percentage: madePercentage
+        // consume messages from the topic
+        console.log("Starting to consume messages...");
+        consumer.run({
+            eachMessage: async ({ topic, partition, message }) => {
+                console.log(`Received message from topic ${topic}, partition ${partition}`);
+                const value = JSON.parse(message.value.toString());
+                
+                // Check if it's a missed free throw
+                if (isFreeThrowMiss(value)) {
+                    missedFreeThrows++;
+                } else if (isFreeThrowMade(value)) {
+                    madeFreeThrows++;
                 }
-            };
+                
+                // Calculate percentage
+                const totalFreeThrows = madeFreeThrows + missedFreeThrows;
+                const madePercentage = totalFreeThrows > 0 
+                    ? ((madeFreeThrows / totalFreeThrows) * 100).toFixed(2) 
+                    : 0;
 
-            // Send to SSE clients
-            await sendSSEMessage(messageData);
+                const messageData = {
+                    time: message.key.toString(),
+                    play: value.homeText,
+                    stats: {
+                        made: madeFreeThrows,
+                        missed: missedFreeThrows,
+                        total: totalFreeThrows,
+                        percentage: madePercentage
+                    }
+                };
 
-            // Optional: keep console logging for debugging
-            const debugMsg = `GameId: ${message.key.toString()}\n` +
-                `Time: ${value.time}\n` +
-                `Play: ${value.homeText}\n` +
-                `Current Stats:\n` +
-                `- Made: ${madeFreeThrows}\n` +
-                `- Missed: ${missedFreeThrows}\n` +
-                `- Total: ${totalFreeThrows}\n` +
-                `- Made Percentage: ${madePercentage}%\n` +
-                `------------------------`;
-            console.log(debugMsg);
-        },
-    })
+                // Send to SSE clients
+                await sendSSEMessage(messageData);
+
+                // Optional: keep console logging for debugging
+                const debugMsg = `GameId: ${message.key.toString()}\n` +
+                    `Time: ${value.time}\n` +
+                    `Play: ${value.homeText}\n` +
+                    `Current Stats:\n` +
+                    `- Made: ${madeFreeThrows}\n` +
+                    `- Missed: ${missedFreeThrows}\n` +
+                    `- Total: ${totalFreeThrows}\n` +
+                    `- Made Percentage: ${madePercentage}%\n` +
+                    `------------------------`;
+                console.log(debugMsg);
+            },
+        });
+    } catch (error) {
+        console.error("Error in consumer setup:", error);
+        throw error;
+    }
 }
 
 function isFreeThrow(play) { 
@@ -235,25 +250,81 @@ async function fetchPlayByPlayData(gameId) {
     }
 }
 
+async function processTournamentGames(schedule, tournamentType) {
+    let gameIds = [];
+
+    for (const [date, bracketRound] of schedule.entries()) {
+        const response = await axios.get(`https://ncaa-api.henrygd.me/scoreboard/basketball-${tournamentType}/d1/${date}`);
+   
+        const roundGameIds = response.data.games
+            .filter(game => game.game.bracketRound.includes(bracketRound))
+            .map(game => game.game.url.split('/').pop());
+        gameIds = gameIds.concat(roundGameIds);
+        //console.log(`Found ${roundGameIds.length} ${tournamentType} ${bracketRound} games for ${date}`);
+    }
+
+    return gameIds;
+}
+
+async function fetchTournamentGameIds() {
+    const womenTournamentSchedule = new Map([
+        ["2025/03/19", "First Four"],
+        ["2025/03/20", "First Four"],
+        ["2025/03/21", "First Round"],
+        ["2025/03/22", "First Round"],
+        ["2025/03/23", "Second Round"],
+        ["2025/03/24", "Second Round"],
+        ["2025/03/28", "Sweet 16"],
+        ["2025/03/29", "Sweet 16"],
+        ["2025/03/30", "Elite Eight"],
+        ["2025/03/31", "Elite Eight"],
+        ["2025/04/04", "FINAL FOUR"],
+        ["2025/04/06", "Championship"]
+    ]);
+
+    const menTournamentSchedule = new Map([
+        ["2025/03/18", "First Four"],
+        ["2025/03/19", "First Four"],
+        ["2025/03/20", "First Round"],
+        ["2025/03/21", "First Round"],
+        ["2025/03/22", "Second Round"],
+        ["2025/03/23", "Second Round"],
+        ["2025/03/27", "Sweet 16"],
+        ["2025/03/28", "Sweet 16"],
+        ["2025/03/29", "Elite Eight"],
+        ["2025/03/30", "Elite Eight"],
+        ["2025/04/05", "FINAL FOUR"],
+        ["2025/04/07", "Championship"]
+    ]);
+
+    const womenGameIds = await processTournamentGames(womenTournamentSchedule, "women");
+    const menGameIds = await processTournamentGames(menTournamentSchedule, "men");
+    
+    return womenGameIds.concat(menGameIds);
+}
+
 async function main() {
     const config = readConfig("client.properties");
     const topic = "march_madness_data_2025_v2";
     
     try {
-                
         // Start the Express server
-        const PORT = process.env.PORT || 3000;
+        const PORT = process.env.PORT || 3001;
         app.listen(PORT, () => {
             console.log(`SSE Server running on port ${PORT}`);
         });
 
-        const gameIds = ["6384749"];//, "6384750", "6384751", "6384752"];
-        for (const gameId of gameIds) {
+        const tournamentGameIds = await fetchTournamentGameIds();
+        console.log(`Found ${tournamentGameIds.length} total games across both tournaments`);
+        
+        // Start the consumer before processing games
+        console.log("Starting Kafka consumer...");
+        await consume(topic, config);
+        
+        for (const gameId of tournamentGameIds) {
             const freeThrowData = await fetchPlayByPlayData(gameId);
             await produce(topic, config, freeThrowData, gameId);
         }
-
-        await consume(topic, config);
     } catch (error) {
         console.error('Failed to process game data:', error);
     }
