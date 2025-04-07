@@ -221,8 +221,8 @@ function isFreeThrowMiss(play) {
 }
 
 function isFreeThrowMade(play) { 
-    return (play.homeText && play.homeText.trim() !== '' && play.homeText.includes("Free Throw  ")) || 
-           (play.visitorText && play.visitorText.trim() !== '' && play.visitorText.includes("Free Throw  "));
+    // two trailing spaces indicate the freethrow was not missed, aka it was made
+    return play.homeText.includes("Free Throw  ") || play.visitorText.includes("Free Throw  ");
 }
 
 // Function to filter homeText and visitorText for "Free Throw"
@@ -325,30 +325,6 @@ async function fetchTournamentGameIds() {
     return { allGames };
 }
 
-async function processGame(gameId, gender) {
-    try {
-        const freeThrowData = await fetchPlayByPlayData(gameId);
-        if (!freeThrowData || !freeThrowData.plays) {
-            console.log(`No play data found for game ${gameId}`);
-            return;
-        }
-
-        // Filter out plays with empty strings and process only valid plays
-        const validPlays = freeThrowData.plays.filter(play => 
-            play && 
-            play.homeText && 
-            play.homeText.trim() !== '' && 
-            (isFreeThrowMade(play) || isFreeThrowMiss(play))
-        );
-
-        for (const play of validPlays) {
-            await produce(topic, config, play, gameId, gender);
-        }
-    } catch (error) {
-        console.error(`Error processing game ${gameId}:`, error);
-    }
-}
-
 async function main() {
     const config = readConfig("client.properties");
     const topic = "march_madness_data_2025_v3";
@@ -367,7 +343,8 @@ async function main() {
         await consume(topic, config);
         console.log(allGames);
         for (const [gameId, gender] of allGames) {
-            await processGame(gameId, gender);
+            const freeThrowData = await fetchPlayByPlayData(gameId);
+            await produce(topic, config, freeThrowData, gameId, gender);
         }
     } catch (error) {
         console.error('Failed to process game data:', error);
